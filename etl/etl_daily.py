@@ -30,9 +30,10 @@ def run_etl():
     for coin_id, symbol in COINS.items():
         logging.info(f'Processing {symbol}...')
 
-        asset_id = conn.execute(
-            'SELECT asset_id FROM dim_asset WHERE symbol = ?', (symbol,)).fetchone()[0]
-        
+        cur = conn.cursor()
+        cur.execute('SELECT asset_id FROM dim_asset WHERE symbol = %s', (symbol,))
+        asset_id = cur.fetchone()[0]
+
         latest_date = get_latest_date(conn, asset_id)
 
         full_history = latest_date is None
