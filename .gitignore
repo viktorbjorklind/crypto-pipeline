@@ -1,0 +1,4 @@
+data/crypto.db
+__pycache__/
+*.pyc
+.env
