@@ -1,10 +1,14 @@
-import requests
-import pandas as pd
-import sqlite3
+import logging
+import os
 from datetime import datetime
-from indicators import add_indicators
+import pandas as pd
 
-DB_PATH = 'data/crypto.db'
+from api import fetch_market_chart, parse_market_chart
+from db import (
+    init_db, get_connection, upsert_assets, clean_dim_asset, get_latest_date, delete_overlap_rows, load_data
+)
+from indicators import add_indicators
+from utils import get_overlap_start, setup_logger
 
 COINS = {
     'bitcoin': 'BTC',
@@ -14,116 +18,50 @@ COINS = {
     'ripple': 'XRP'
 }
 
-def fetch_market_data(coin_id):
-    url = f'https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart'
-    params = {'vs_currency': 'usd', 'days': '365'}
-    r = requests.get(url, params=params)
-    data = r.json()
-    
-    # Handle API errors
-    if 'prices' not in data or not data['prices']:
-        print(f'API returned no data for {coin_id}: {data}')
-        return pd.DataFrame()
-
-    prices = data.get('prices', [])
-    market_caps = data.get('market_caps', [])
-    volumes = data.get('total_volumes', [])
-
-    df = pd.DataFrame(prices, columns=['timestamp', 'price'])
-
-    df['market_cap'] = [mc[1] for mc in market_caps] if market_caps else None
-    df['volume'] = [v[1] for v in volumes] if volumes else None
-
-    df['date'] = pd.to_datetime(df['timestamp'], unit='ms').dt.date
-    df = df[['date', 'price', 'market_cap', 'volume']]
-
-    return df
-
-def init_db():
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-
-    cur.execute('''
-        CREATE TABLE IF NOT EXISTS dim_asset (
-            asset_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            symbol TEXT,
-            name TEXT
-        )
-    ''')
-
-    cur.execute('''
-        CREATE TABLE IF NOT EXISTS fact_price_history (
-            asset_id INTEGER,
-            date TEXT,
-            price REAL,
-            market_cap REAL,
-            volume REAL
-        )
-    ''')
-
-    cur.execute('''
-        CREATE TABLE IF NOT EXISTS fact_indicators (
-            asset_id INTEGER,
-            date TEXT,
-            daily_return REAL,
-            ma_7 REAL,
-            ma_30 REAL,
-            volatility REAL
-        )
-    ''')
-
-    conn.commit()
-    conn.close()
-
-def get_asset_id(symbol, name):
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-
-    cur.execute('SELECT asset_id FROM dim_asset WHERE symbol = ?', (symbol,))
-    row = cur.fetchone()
-
-    if row:
-        conn.close()
-        return row[0]
-    
-    cur.execute('INSERT INTO dim_asset (symbol, name) VALUES (?, ?)', (symbol, name))
-    conn.commit()
-    asset_id = cur.lastrowid
-    conn.close()
-    return asset_id
-
-def load_data(asset_id, df_prices, df_indicators):
-    conn = sqlite3.connect(DB_PATH)
-
-    df_prices['asset_id'] = asset_id
-    df_indicators['asset_id'] = asset_id
-
-    # DEBUG CHECK - see what columns are being inserted
-    #print('INDICATOR COLUMNS:', df_indicators.columns.tolist())
-    #print(df_indicators.head())
-
-    df_prices.to_sql('fact_price_history', conn, if_exists='append', index=False)
-    df_indicators.to_sql('fact_indicators', conn, if_exists='append', index=False)
-
-    conn.close()
-
 def run_etl():
+    setup_logger()
+    logging.info('Starting ETL pipeline')
+
     init_db()
+    conn = get_connection()
+    upsert_assets(conn)
+    clean_dim_asset(conn)
 
     for coin_id, symbol in COINS.items():
-        print(f'Processing {symbol}...')
+        logging.info(f'Processing {symbol}...')
 
-        df = fetch_market_data(coin_id)
-        if df.empty:
-            print(f'Skipping {symbol}, no data returned.')
+        asset_id = conn.execute(
+            'SELECT asset_id FROM dim_asset WHERE symbol = ?', (symbol,)).fetchone()[0]
+        
+        latest_date = get_latest_date(conn, asset_id)
+
+        full_history = latest_date is None
+
+        if full_history:
+            logging.info(' First run -> loading full history')
+        else:
+            logging.info(f' Latest date in DB: {latest_date}')
+
+        start_date = get_overlap_start(latest_date, days_overlap=1)
+        logging.info(f' Reloading from {start_date}')
+
+        raw = fetch_market_chart(coin_id, full_history=full_history)
+        df_full = parse_market_chart(raw)
+        df_new = df_full[df_full['date'] >= start_date]
+
+        if df_new.empty:
+            logging.info(f' No new data for {symbol}')
             continue
 
-        df_ind = add_indicators(df.copy())
+        delete_overlap_rows(conn, asset_id, start_date)
 
-        asset_id = get_asset_id(symbol, coin_id.capitalize())
-        load_data(asset_id, df, df_ind)
+        df_ind = add_indicators(df_new)
+        load_data(conn, asset_id, df_new, df_ind)
 
-    print('ETL completed successfully.')
+        logging.info(f' Inserted {len(df_new)} rows for {symbol}')
+
+    conn.close()
+    logging.info('ETL completed successfully.')
 
 if __name__ == '__main__':
     run_etl()
