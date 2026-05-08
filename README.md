@@ -2,9 +2,9 @@
 
 A modular, production-style ETL pipeline that fetches historical crypto data from CoinGecko, computes technical indicators, and loads everything into a PostgreSQL database. Supports incremental loading with overlap correction.
 
+```text
 ## Project Structure
 
-```text
 CRYPTO-PIPELINE/
 ├── etl/
 │   ├── api.py           # CoinGecko API calls and parsing
