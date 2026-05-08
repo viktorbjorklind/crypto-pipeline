@@ -1,12 +1,16 @@
 import psycopg2
 import pandas as pd
+from dotenv import load_dotenv
+import os
+
+load_dotenv()
 
 def get_connection():
     return psycopg2.connect(
-        host='localhost',
-        database='crypto_etl',
-        user='postgres',
-        password='H4mngatan3!'
+        host=os.getenv('DB_HOST'),
+        database=os.getenv('DB_NAME'),
+        user=os.getenv('DB_USER'),
+        password=os.getenv('DB_PASSWORD')
     )
 
 def init_db():
@@ -90,43 +94,40 @@ def delete_overlap_rows(conn, asset_id, start_date):
     cur.execute('DELETE FROM fact_indicators WHERE asset_id = %s AND date >= %s', (asset_id, start_date))
     conn.commit()
 
-def load_data(conn, asset_id, df_prices, df_indicators):
+def load_data(conn, asset_id, df_price, df_indicators):
     cur = conn.cursor()
 
-    # Insert price history
-    for _, row in df_prices.iterrows():
-        cur.execute('''
-            INSERT INTO fact_price_history (asset_id, date, price, market_cap, volume)
-            VALUES (%s, %s, %s, %s, %s)
-            ON CONFLICT (asset_id, date) DO UPDATE
-            SET price = EXCLUDED.price,
-                market_cap = EXCLUDED.market_cap,
-                volume = EXCLUDED.volume;
-        ''', (
-            asset_id,
-            row['date'],
-            float(row['price']),
-            float(row['market_cap']),
-            float(row['volume'])
-        ))
+    price_rows = [
+        (asset_id, row['date'], float(row['price']), float(row['market_cap']), float(row['volume']))
+        for _, row in df_price.iterrows()
+    ]
+    cur.executemany('''
+        INSERT INTO fact_price_history (asset_id, date, price, market_cap, volume)
+        VALUES (%s, %s, %s, %s, %s)
+        ON CONFLICT (asset_id, date) DO UPDATE
+        SET price = EXCLUDED.price,
+            market_cap = EXCLUDED.market_cap,
+            volume = EXCLUDED.volume
+    ''', price_rows)
 
-    # Insert indicators
-    for _, row in df_indicators.iterrows():
-        cur.execute('''
-            INSERT INTO fact_indicators (asset_id, date, daily_return, ma_7, ma_30, volatility)
-            VALUES (%s, %s, %s, %s, %s, %s)
-            ON CONFLICT (asset_id, date) DO UPDATE
-            SET daily_return = EXCLUDED.daily_return,
-                ma_7 = EXCLUDED.ma_7,
-                ma_30 = EXCLUDED.ma_30,
-                volatility = EXCLUDED.volatility;
-        ''', (
-            asset_id,
-            row['date'],
+    indicator_rows = [
+        (
+            asset_id, row['date'], 
             None if pd.isna(row['daily_return']) else float(row['daily_return']),
             None if pd.isna(row['ma_7']) else float(row['ma_7']),
             None if pd.isna(row['ma_30']) else float(row['ma_30']),
             None if pd.isna(row['volatility']) else float(row['volatility'])
-        ))
+        )
+        for _, row in df_indicators.iterrows()
+    ]
+    cur.executemany('''
+        INSERT INTO fact_indicators (asset_id, date, daily_return, ma_7, ma_30, volatility)
+        VALUES (%s, %s, %s, %s, %s, %s)
+        ON CONFLICT (asset_id, date) DO UPDATE
+        SET daily_return = EXCLUDED.daily_return,
+            ma_7 = EXCLUDED.ma_7,
+            ma_30 = EXCLUDED.ma_30,
+            volatility = EXCLUDED.volatility
+    ''', indicator_rows)
 
     conn.commit()

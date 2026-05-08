@@ -1,6 +1,4 @@
 import logging
-import os
-from datetime import datetime
 import pandas as pd
 
 from api import fetch_market_chart, parse_market_chart
@@ -56,8 +54,8 @@ def run_etl():
 
         delete_overlap_rows(conn, asset_id, start_date)
 
-        df_ind = add_indicators(df_new)
-        load_data(conn, asset_id, df_new, df_ind)
+        df_indicators = add_indicators(df_new)
+        load_data(conn, asset_id, df_new, df_indicators)
 
         logging.info(f' Inserted {len(df_new)} rows for {symbol}')
 

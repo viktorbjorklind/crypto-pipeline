@@ -6,7 +6,7 @@ import pandas as pd
 def fetch_with_retry(url, params=None, max_retries=5):
     delay = 2 #seconds
 
-    for attempt in range(max_retries):
+    for _ in range(max_retries):
         resp = requests.get(url, params=params)
 
         # Rate limit
