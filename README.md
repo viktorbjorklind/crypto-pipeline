@@ -4,6 +4,7 @@ A modular, production-style ETL pipeline that fetches historical crypto data fro
 
 ## Project Structure
 
+```text
 CRYPTO-PIPELINE/
 ├── etl/
 │   ├── api.py           # CoinGecko API calls and parsing
